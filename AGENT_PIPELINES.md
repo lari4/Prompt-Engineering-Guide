@@ -609,3 +609,322 @@ print("Sources:", len(result["sources"]), "documents")
 
 ---
 
+## ReAct Agent Pipeline
+
+### Overview
+ReAct (Reasoning and Acting) pipeline interleaves reasoning traces with task-specific actions, allowing the agent to think, act, and observe results iteratively until solving the task.
+
+### Use Cases
+- Multi-step question answering requiring research
+- Fact verification with evidence gathering
+- Interactive problem solving
+- Decision-making tasks with environment interaction
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   User      │
+│   Question  │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   ReAct Prompt with Examples        │
+│   - Show Thought-Action-Observation │
+│   - Provide tool descriptions       │
+└──────┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   LLM: Generate Thought         │
+    │   "I need to find X..."         │
+    └──┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   LLM: Decide Action            │
+    │   "Search[topic]"               │
+    └──┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   Execute Action via Tool       │
+    │   - Search engine               │
+    │   - Wikipedia API               │
+    │   - Calculator                  │
+    │   - Database query              │
+    └──┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   Observation                   │
+    │   Return tool result            │
+    └──┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   Add to Context                │
+    │   Thought + Action + Observation│
+    └──┬──────────────────────────────┘
+       │
+       v
+    ┌──▼──────────────────────────────┐
+    │   Check if Task Complete?       │
+    └──┬───────────────┬──────────────┘
+       │ No            │ Yes
+       │               │
+       │               v
+       │          ┌────────────┐
+       │          │   Return   │
+       │          │   Final    │
+       │          │   Answer   │
+       │          └────────────┘
+       │
+       └──> Loop back to "Generate Thought"
+```
+
+### Example: Multi-Hop Question Answering
+
+**Input Data:**
+```
+Question: "What is the elevation range for the area that the eastern sector of the Colorado orogeny extends into?"
+```
+
+**Iteration 1:**
+
+**Thought 1:**
+```
+I need to search Colorado orogeny, find the area that the eastern sector extends into, then find the elevation range of that area.
+```
+
+**Action 1:**
+```
+Search[Colorado orogeny]
+```
+
+**Observation 1:**
+```
+The Colorado orogeny was an episode of mountain building (an orogeny) in Colorado and surrounding areas. This took place from 1780 to 1650 million years ago (Mya), during the Paleoproterozoic (Statherian Period). It is recorded in the Colorado orogen, a >500-km-wide belt of oceanic arc rock that extends southward into New Mexico. The eastern sector extends into the high plains and is called the Central Plains orogeny.
+```
+
+**Iteration 2:**
+
+**Thought 2:**
+```
+The eastern sector of Colorado orogeny extends into the high plains. I need to search high plains and find its elevation range.
+```
+
+**Action 2:**
+```
+Search[high plains]
+```
+
+**Observation 2:**
+```
+High Plains refers to one of two distinct land regions: the Great Plains, or the High Plains (United States). The High Plains are a subregion of the Great Plains, mainly in the Western United States. The High Plains have an elevation ranging from 1,800 to 7,000 feet (550 to 2,130 m).
+```
+
+**Iteration 3:**
+
+**Thought 3:**
+```
+High Plains have an elevation range of 1,800 to 7,000 feet, so the answer is 1,800 to 7,000 feet.
+```
+
+**Action 3:**
+```
+Finish[1,800 to 7,000 feet]
+```
+
+**Final Answer:**
+```
+1,800 to 7,000 feet
+```
+
+**Data Flow:**
+1. **Input** → Complex question requiring multiple steps
+2. **Thought 1** → Plan first step: search Colorado orogeny
+3. **Action 1** → Execute search tool
+4. **Observation 1** → Receive: eastern sector = high plains
+5. **Thought 2** → Plan second step: search high plains
+6. **Action 2** → Execute search tool
+7. **Observation 2** → Receive: elevation 1,800-7,000 feet
+8. **Thought 3** → Conclude with answer
+9. **Action 3** → Finish with result
+10. **Output** → "1,800 to 7,000 feet"
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+import re
+from typing import Dict, List, Tuple
+
+client = OpenAI()
+
+class ReActAgent:
+    def __init__(self, tools: Dict):
+        """
+        tools: Dictionary of available tools/functions
+        Example: {"Search": search_function, "Calculator": calc_function}
+        """
+        self.tools = tools
+        self.max_iterations = 10
+    
+    def create_react_prompt(self, question: str, examples: List[str], history: List[Tuple]) -> str:
+        """Build ReAct prompt with examples and interaction history"""
+        
+        # Few-shot examples of Thought-Action-Observation
+        prompt = "Solve a question answering task with interleaving Thought, Action, Observation steps.\n\n"
+        
+        # Add examples
+        for example in examples:
+            prompt += example + "\n\n"
+        
+        # Add current question
+        prompt += f"Question: {question}\n"
+        
+        # Add interaction history
+        for i, (thought, action, observation) in enumerate(history, 1):
+            prompt += f"Thought {i}: {thought}\n"
+            prompt += f"Action {i}: {action}\n"
+            prompt += f"Observation {i}: {observation}\n"
+        
+        # Prompt for next thought
+        prompt += f"Thought {len(history) + 1}:"
+        
+        return prompt
+    
+    def parse_action(self, text: str) -> Tuple[str, str]:
+        """Extract action and argument from LLM response"""
+        # Pattern: Action[argument]
+        match = re.search(r'Action \d+: (\w+)\[(.*?)\]', text)
+        if match:
+            tool_name = match.group(1)
+            argument = match.group(2)
+            return tool_name, argument
+        return None, None
+    
+    def execute_tool(self, tool_name: str, argument: str) -> str:
+        """Execute the specified tool with argument"""
+        if tool_name in self.tools:
+            return self.tools[tool_name](argument)
+        return f"Error: Tool {tool_name} not found"
+    
+    def solve(self, question: str, examples: List[str]) -> Dict:
+        """Main ReAct loop"""
+        history = []
+        
+        for iteration in range(self.max_iterations):
+            # Step 1: Generate Thought
+            prompt = self.create_react_prompt(question, examples, history)
+            
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=200,
+                stop=["\nObservation"]
+            )
+            
+            thought_and_action = response.choices[0].message.content
+            
+            # Extract thought
+            thought_match = re.search(r'Thought \d+: (.+?)(?:\n|$)', thought_and_action)
+            thought = thought_match.group(1) if thought_match else ""
+            
+            # Step 2: Parse Action
+            # Continue prompt to get action
+            action_prompt = prompt + thought_and_action + "\nAction " + str(iteration + 1) + ":"
+            
+            action_response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": action_prompt}],
+                temperature=0.7,
+                max_tokens=50,
+                stop=["\n"]
+            )
+            
+            action_text = "Action " + str(iteration + 1) + ": " + action_response.choices[0].message.content
+            tool_name, argument = self.parse_action(action_text)
+            
+            # Check if task is complete
+            if tool_name == "Finish":
+                return {
+                    "answer": argument,
+                    "iterations": iteration + 1,
+                    "history": history,
+                    "final_thought": thought
+                }
+            
+            # Step 3: Execute Action
+            observation = self.execute_tool(tool_name, argument)
+            
+            # Step 4: Add to history
+            history.append((thought, action_text, observation))
+        
+        return {
+            "answer": "Max iterations reached",
+            "iterations": self.max_iterations,
+            "history": history
+        }
+
+# Define tools
+def search_wikipedia(query: str) -> str:
+    """Mock search function - in practice, call Wikipedia API"""
+    knowledge_base = {
+        "Colorado orogeny": "The Colorado orogeny was an episode of mountain building in Colorado and surrounding areas. The eastern sector extends into the high plains and is called the Central Plains orogeny.",
+        "high plains": "The High Plains are a subregion of the Great Plains. The High Plains have an elevation ranging from 1,800 to 7,000 feet (550 to 2,130 m)."
+    }
+    return knowledge_base.get(query, "No information found")
+
+# Usage
+tools = {
+    "Search": search_wikipedia,
+    "Finish": lambda x: x
+}
+
+examples = [
+    """Question: What is the capital of France?
+Thought 1: I can answer this directly from my knowledge.
+Action 1: Finish[Paris]"""
+]
+
+agent = ReActAgent(tools)
+result = agent.solve(
+    "What is the elevation range for the area that the eastern sector of the Colorado orogeny extends into?",
+    examples
+)
+
+print("Answer:", result["answer"])
+print("Iterations:", result["iterations"])
+for i, (t, a, o) in enumerate(result["history"], 1):
+    print(f"\n--- Iteration {i} ---")
+    print(f"Thought: {t}")
+    print(f"Action: {a}")
+    print(f"Observation: {o}")
+```
+
+### Key Characteristics
+- **Interleaved Reasoning & Action**: Alternates between thinking and acting
+- **Tool Integration**: Can use external tools (search, calculator, APIs)
+- **Iterative**: Multiple thought-action-observation cycles
+- **Transparent**: Full reasoning trace is visible
+- **Flexible**: Can adjust plan based on observations
+- **Self-Correcting**: Can fix mistakes by gathering more information
+
+### Performance Benefits
+- **HotpotQA**: 27% → 34% accuracy improvement over action-only
+- **FEVER**: Better fact verification with explicit reasoning
+- **Human Interpretability**: Clear decision-making process
+
+### Available Actions/Tools
+- **Search[entity]**: Look up information
+- **Lookup[keyword]**: Find specific detail in last search
+- **Calculator[expression]**: Perform calculations
+- **Finish[answer]**: Return final answer
+- **Custom tools**: Database queries, API calls, code execution
+
+---
+
