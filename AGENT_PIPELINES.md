@@ -1282,3 +1282,525 @@ print("Vote Distribution:", result["vote_counts"])
 
 ---
 
+## Tree of Thoughts Exploration Pipeline
+
+### Overview
+Tree of Thoughts (ToT) maintains a tree of reasoning paths, enabling systematic exploration with lookahead and backtracking using search algorithms.
+
+### Use Cases
+- Complex strategic planning
+- Game-like problems (Game of 24)
+- Creative writing with constraints
+- Multi-step optimization problems
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Problem   │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Generate Initial Thoughts (Level 1)│
+│   Thought A | Thought B | Thought C │
+└─┬───────────┬───────────┬───────────┘
+  │           │           │
+  v           v           v
+┌────────┐ ┌────────┐  ┌────────┐
+│Evaluate│ │Evaluate│  │Evaluate│
+│A: 0.7  │ │B: 0.9  │  │C: 0.4  │
+└───┬────┘ └────┬───┘  └────┬───┘
+    │           │(best)      │
+    │           v            │
+    │     ┌────────────────────────────┐
+    │     │  Expand Best: Generate     │
+    │     │  Thought B1 | B2 | B3      │
+    │     └─┬──────────┬──────────┬────┘
+    │       v          v          v
+    │    ┌────┐     ┌────┐     ┌────┐
+    │    │Eval│     │Eval│     │Eval│
+    │    │0.8 │     │0.6 │     │0.9 │
+    │    └────┘     └────┘     └─┬──┘
+    │                            │(best)
+    v                            v
+[Backtrack if needed]     ┌──────────────┐
+                          │  Continue    │
+                          │  Expansion   │
+                          └──────┬───────┘
+                                 │
+                                 v
+                          ┌──────────────┐
+                          │   Solution   │
+                          │   Found      │
+                          └──────────────┘
+```
+
+### Example: Game of 24
+
+**Problem:** "Use 4 numbers (4, 9, 10, 13) and basic arithmetic operations (+, -, *, /) to obtain 24. Each number must be used exactly once."
+
+**Tree Exploration:**
+
+**Level 1 - Generate Initial Thoughts:**
+```
+Thought 1: (13 - 9) * (10 - 4) = 4 * 6 = 24 ✓
+Thought 2: (10 - 4) * 13 - 9 = 6 * 13 - 9 = 69 ✗
+Thought 3: 13 * 9 - 10 - 4 = 117 - 14 = 103 ✗
+```
+
+**Evaluation:**
+- Thought 1: Sure (correct solution found)
+- Thought 2: Impossible (too large)
+- Thought 3: Impossible (too large)
+
+**Result:** Solution found at Level 1, no need for deeper exploration.
+
+**Complex Example Requiring Backtracking:**
+
+**Problem:** "4, 5, 6, 10 → 24"
+
+**Level 1:**
+```
+Thought A: (10 - 6) * 5 + 4 = 4 * 5 + 4 = 24 ✓ [Solution]
+Thought B: (10 - 4) * 6 - 5 = 6 * 6 - 5 = 31 [Explore]
+Thought C: 10 + 6 + 5 + 4 = 25 [Dead end]
+```
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+from typing import List, Tuple
+import re
+
+client = OpenAI()
+
+class TreeOfThoughts:
+    def __init__(self, max_depth: int = 3, breadth: int = 3):
+        self.max_depth = max_depth
+        self.breadth = breadth  # Number of thoughts to generate per level
+    
+    def generate_thoughts(self, problem: str, current_path: List[str]) -> List[str]:
+        """Generate possible next thoughts"""
+        context = "\n".join(current_path) if current_path else ""
+        
+        prompt = f"""Problem: {problem}
+
+Current reasoning path:
+{context}
+
+Generate {self.breadth} different next steps or thoughts to solve this problem.
+Each thought should be on a new line."""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+            max_tokens=300
+        )
+        
+        thoughts = response.choices[0].message.content.strip().split('\n')
+        return thoughts[:self.breadth]
+    
+    def evaluate_thought(self, problem: str, thought: str) -> Tuple[str, float]:
+        """Evaluate if thought is promising (sure/likely/impossible)"""
+        prompt = f"""Problem: {problem}
+Thought: {thought}
+
+Evaluate if this thought leads toward solving the problem.
+Respond with one of: sure (100% correct), likely (promising), unlikely (poor direction), impossible (wrong)
+
+Evaluation:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=50
+        )
+        
+        evaluation = response.choices[0].message.content.lower()
+        
+        # Map evaluation to score
+        if "sure" in evaluation:
+            return "sure", 1.0
+        elif "likely" in evaluation:
+            return "likely", 0.7
+        elif "unlikely" in evaluation:
+            return "unlikely", 0.3
+        else:
+            return "impossible", 0.0
+    
+    def bfs_search(self, problem: str) -> dict:
+        """Breadth-first search through thought tree"""
+        # Queue: (path, depth)
+        queue = [([], 0)]
+        best_solution = None
+        explored = []
+        
+        while queue:
+            current_path, depth = queue.pop(0)
+            
+            if depth >= self.max_depth:
+                continue
+            
+            # Generate thoughts for current node
+            thoughts = self.generate_thoughts(problem, current_path)
+            
+            for thought in thoughts:
+                # Evaluate thought
+                evaluation, score = self.evaluate_thought(problem, thought)
+                
+                new_path = current_path + [thought]
+                explored.append({
+                    "path": new_path,
+                    "thought": thought,
+                    "evaluation": evaluation,
+                    "score": score,
+                    "depth": depth + 1
+                })
+                
+                # Check if solution found
+                if evaluation == "sure":
+                    best_solution = new_path
+                    break
+                
+                # Add promising paths to queue
+                if score >= 0.5:
+                    queue.append((new_path, depth + 1))
+            
+            if best_solution:
+                break
+        
+        return {
+            "solution": best_solution,
+            "explored_nodes": len(explored),
+            "exploration_tree": explored
+        }
+
+# Usage
+tot = TreeOfThoughts(max_depth=3, breadth=3)
+result = tot.bfs_search("Use 4, 9, 10, 13 with +, -, *, / to get 24. Each number used once.")
+
+print("Solution:", result["solution"])
+print("Nodes explored:", result["explored_nodes"])
+```
+
+### Key Characteristics
+- **Systematic Exploration**: BFS or DFS through thought space
+- **Evaluation**: Self-assess each thought's promise
+- **Backtracking**: Can revisit earlier choices
+- **Lookahead**: Evaluate before committing
+- **Resource-Intensive**: Multiple LLM calls per level
+
+### Performance Benefits
+- **Game of 24**: 74% success rate (vs 7.3% with CoT)
+- **Creative Writing**: Better coherence with constraints
+- **Strategic Tasks**: Superior planning capabilities
+
+---
+
+## Reflexion Learning Pipeline
+
+### Overview
+Reflexion enables agents to learn from mistakes through self-reflection, creating linguistic feedback that improves performance across trials.
+
+### Use Cases
+- Code generation with debugging
+- Decision-making tasks requiring trial-and-error
+- Iterative problem solving
+- Learning from failures
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Task      │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Trial 1                           │
+│   Actor: Generate solution          │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Evaluator: Test solution          │
+│   Result: Failed (Score: 3/10)      │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Self-Reflection                   │
+│   "The solution failed because I    │
+│    didn't consider edge case X.     │
+│    Next time, I should check Y."    │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Episodic Memory                   │
+│   Store: Attempt + Reflection       │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Trial 2 (with memory)             │
+│   Actor: Generate improved solution │
+│   Consider previous reflection      │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Evaluator: Test solution          │
+│   Result: Better (Score: 7/10)      │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Self-Reflection                   │
+│   "Much better, but still need to   │
+│    optimize the data structure."    │
+└──────┬──────────────────────────────┘
+       │
+       v
+       ... (continue until success or max trials)
+       │
+       v
+┌─────────────────────────────────────┐
+│   Trial N                           │
+│   Result: Success! (Score: 10/10)   │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Return    │
+│   Solution  │
+└─────────────┘
+```
+
+### Example: Code Generation with Debugging
+
+**Task:** "Write a Python function to check if a number is prime."
+
+**Trial 1:**
+
+**Actor Output:**
+```python
+def is_prime(n):
+    for i in range(2, n):
+        if n % i == 0:
+            return False
+    return True
+```
+
+**Evaluator Result:**
+```
+Test cases:
+- is_prime(1): Expected False, Got True ✗
+- is_prime(2): Expected True, Got True ✓
+- is_prime(10): Expected False, Got False ✓
+- is_prime(17): Expected True, Got True ✓
+
+Score: 3/4 tests passed
+Error: Fails for n=1
+```
+
+**Self-Reflection:**
+```
+The function incorrectly returns True for n=1. The issue is that 1 is not 
+considered prime, but my function doesn't check for this edge case. Also, 
+checking all numbers up to n is inefficient. I should:
+1. Add check for n <= 1
+2. Optimize by only checking up to sqrt(n)
+```
+
+**Memory Stored:**
+```
+Trial 1: Failed for n=1
+Reflection: Need edge case handling for n <= 1, consider sqrt optimization
+```
+
+**Trial 2 (with reflection):**
+
+**Actor Output (improved):**
+```python
+import math
+
+def is_prime(n):
+    if n <= 1:
+        return False
+    if n == 2:
+        return True
+    if n % 2 == 0:
+        return False
+    
+    for i in range(3, int(math.sqrt(n)) + 1, 2):
+        if n % i == 0:
+            return False
+    return True
+```
+
+**Evaluator Result:**
+```
+All test cases passed: 10/10 ✓
+Performance: Optimized with sqrt check
+```
+
+**Success!**
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+from typing import List, Dict
+
+client = OpenAI()
+
+class ReflexionAgent:
+    def __init__(self, max_trials: int = 5):
+        self.max_trials = max_trials
+        self.memory = []  # Episodic memory of reflections
+    
+    def actor_generate(self, task: str) -> str:
+        """Generate solution attempt"""
+        # Include past reflections in context
+        reflection_context = "\n".join([
+            f"Previous attempt {i+1} reflection: {r['reflection']}"
+            for i, r in enumerate(self.memory)
+        ])
+        
+        prompt = f"""Task: {task}
+
+Previous reflections:
+{reflection_context if reflection_context else "None (first attempt)"}
+
+Generate a solution:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        return response.choices[0].message.content
+    
+    def evaluator_test(self, task: str, solution: str) -> Dict:
+        """Evaluate the solution"""
+        prompt = f"""Task: {task}
+Solution: {solution}
+
+Test this solution and provide:
+1. Test results
+2. Score (0-10)
+3. Specific errors if any
+
+Evaluation:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=300
+        )
+        
+        evaluation = response.choices[0].message.content
+        
+        # Extract score (simplified parsing)
+        import re
+        score_match = re.search(r'Score:\s*(\d+)', evaluation)
+        score = int(score_match.group(1)) if score_match else 0
+        
+        return {
+            "evaluation": evaluation,
+            "score": score,
+            "passed": score >= 8
+        }
+    
+    def self_reflect(self, task: str, solution: str, evaluation: Dict) -> str:
+        """Generate reflection on failure"""
+        prompt = f"""Task: {task}
+Your solution: {solution}
+Evaluation result: {evaluation['evaluation']}
+
+Reflect on what went wrong and how to improve. Be specific about:
+1. What failed and why
+2. What to try differently next time
+
+Reflection:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content
+    
+    def solve(self, task: str) -> Dict:
+        """Main Reflexion loop"""
+        for trial in range(self.max_trials):
+            # Actor: Generate solution
+            solution = self.actor_generate(task)
+            
+            # Evaluator: Test solution
+            evaluation = self.evaluator_test(task, solution)
+            
+            # Check if success
+            if evaluation['passed']:
+                return {
+                    "success": True,
+                    "trial": trial + 1,
+                    "solution": solution,
+                    "score": evaluation['score'],
+                    "reflections": self.memory
+                }
+            
+            # Self-Reflection: Learn from failure
+            reflection = self.self_reflect(task, solution, evaluation)
+            
+            # Store in memory
+            self.memory.append({
+                "trial": trial + 1,
+                "solution": solution,
+                "score": evaluation['score'],
+                "reflection": reflection
+            })
+        
+        return {
+            "success": False,
+            "trials": self.max_trials,
+            "best_solution": self.memory[-1]['solution'],
+            "best_score": max(m['score'] for m in self.memory),
+            "reflections": self.memory
+        }
+
+# Usage
+agent = ReflexionAgent(max_trials=5)
+result = agent.solve("Write a Python function to check if a number is prime")
+
+print("Success:", result["success"])
+print("Trials needed:", result.get("trial", result.get("trials")))
+if result["success"]:
+    print("Solution:", result["solution"])
+```
+
+### Key Characteristics
+- **Learning from Mistakes**: Explicit reflection mechanism
+- **Memory**: Stores past attempts and learnings
+- **Iterative Improvement**: Each trial benefits from previous reflections
+- **No Fine-Tuning**: Works with frozen LLM
+- **Self-Evaluation**: Agent critiques its own work
+
+### Performance Benefits
+- **AlfWorld**: 90% → 97% success rate
+- **HotpotQA**: Better with each trial
+- **HumanEval**: 91% success on code generation
+- **Efficiency**: Learns faster than traditional RL
+
+---
+
