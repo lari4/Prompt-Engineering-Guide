@@ -1804,3 +1804,600 @@ if result["success"]:
 
 ---
 
+## Program-Aided Language Model (PAL) Pipeline
+
+### Overview
+PAL uses LLMs to generate programs (Python code) as intermediate reasoning steps, then executes the code to get precise answers. This offloads computation to interpreters.
+
+### Use Cases
+- Mathematical calculations
+- Date/time reasoning
+- Algorithmic problem solving
+- Tasks requiring precise computation
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Problem   │
+│  (Natural   │
+│  Language)  │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   LLM: Generate Python Code         │
+│   - Parse problem                   │
+│   - Write solution as code          │
+│   - Use libraries (datetime, math)  │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Generated Python Program          │
+│   from datetime import datetime     │
+│   today = datetime(2023, 2, 27)     │
+│   born = today - timedelta(years=25)│
+│   print(born.strftime('%m/%d/%Y'))  │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Python Interpreter Execution      │
+│   Run code safely                   │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Execution Result                  │
+│   Output: "02/27/1998"              │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Format Answer (Optional)          │
+│   LLM: Convert output to natural    │
+│   language answer                   │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Final     │
+│   Answer    │
+└─────────────┘
+```
+
+### Example: Date Reasoning
+
+**Input:**
+```
+Question: "Today is 27 February 2023. I was born exactly 25 years ago. What is the date I was born in MM/DD/YYYY format?"
+```
+
+**Step 1: LLM Generates Code**
+
+**Prompt:**
+```
+Write Python code to solve this problem:
+
+Question: Today is 27 February 2023. I was born exactly 25 years ago. What is the date I was born in MM/DD/YYYY format?
+
+# Python code:
+```
+
+**LLM Output:**
+```python
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+
+# Today's date
+today = datetime(2023, 2, 27)
+
+# Calculate birth date (25 years ago)
+born = today - relativedelta(years=25)
+
+# Format as MM/DD/YYYY
+answer = born.strftime('%m/%d/%Y')
+print(answer)
+```
+
+**Step 2: Execute Code**
+
+**Interpreter Output:**
+```
+02/27/1998
+```
+
+**Step 3: Final Answer**
+```
+You were born on 02/27/1998
+```
+
+### Example: Mathematical Reasoning
+
+**Input:**
+```
+"A restaurant sold 40 burgers on Monday, 50 on Tuesday, and 60 on Wednesday. If each burger costs $8, and they had a 10% discount on Wednesday, how much did they earn in total?"
+```
+
+**Generated Code:**
+```python
+# Sales data
+monday_burgers = 40
+tuesday_burgers = 50
+wednesday_burgers = 60
+
+# Price per burger
+price_per_burger = 8
+
+# Calculate earnings
+monday_earnings = monday_burgers * price_per_burger
+tuesday_earnings = tuesday_burgers * price_per_burger
+wednesday_earnings = wednesday_burgers * price_per_burger * 0.9  # 10% discount
+
+# Total
+total_earnings = monday_earnings + tuesday_earnings + wednesday_earnings
+print(f"${total_earnings:.2f}")
+```
+
+**Execution Result:**
+```
+$1152.00
+```
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+import ast
+import sys
+from io import StringIO
+
+client = OpenAI()
+
+class PALPipeline:
+    def __init__(self):
+        self.allowed_imports = ['datetime', 'math', 'dateutil', 'statistics']
+    
+    def generate_code(self, problem: str) -> str:
+        """Step 1: Generate Python code from problem"""
+        prompt = f"""Write Python code to solve this problem. 
+Use print() to output the final answer.
+Import any necessary libraries.
+
+Problem: {problem}
+
+# Python code:
+```python"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,  # Lower temperature for code generation
+            max_tokens=400,
+            stop=["```"]
+        )
+        
+        code = response.choices[0].message.content.strip()
+        return code
+    
+    def execute_code(self, code: str) -> dict:
+        """Step 2: Safely execute Python code"""
+        # Capture stdout
+        old_stdout = sys.stdout
+        sys.stdout = captured_output = StringIO()
+        
+        result = {
+            "success": False,
+            "output": None,
+            "error": None
+        }
+        
+        try:
+            # Create restricted namespace
+            namespace = {
+                '__builtins__': {
+                    'print': print,
+                    'range': range,
+                    'len': len,
+                    'int': int,
+                    'float': float,
+                    'str': str,
+                    'list': list,
+                    'dict': dict
+                }
+            }
+            
+            # Execute code
+            exec(code, namespace)
+            
+            # Get output
+            result["success"] = True
+            result["output"] = captured_output.getvalue().strip()
+            
+        except Exception as e:
+            result["error"] = str(e)
+        
+        finally:
+            sys.stdout = old_stdout
+        
+        return result
+    
+    def solve(self, problem: str) -> dict:
+        """Complete PAL pipeline"""
+        # Step 1: Generate code
+        code = self.generate_code(problem)
+        
+        # Step 2: Execute code
+        execution_result = self.execute_code(code)
+        
+        # Step 3: Format response
+        if execution_result["success"]:
+            answer = execution_result["output"]
+        else:
+            answer = f"Error: {execution_result['error']}"
+        
+        return {
+            "problem": problem,
+            "generated_code": code,
+            "execution_result": execution_result,
+            "answer": answer
+        }
+
+# Usage
+pal = PALPipeline()
+
+result = pal.solve(
+    "Today is 27 February 2023. I was born exactly 25 years ago. What is the date I was born?"
+)
+
+print("Generated Code:")
+print(result["generated_code"])
+print("\nAnswer:", result["answer"])
+```
+
+### Key Characteristics
+- **Precision**: Leverages interpreters for exact computation
+- **Reliability**: Reduces arithmetic errors in LLM reasoning
+- **Transparency**: Code is visible and verifiable
+- **Limitations**: Limited to problems expressible as code
+- **Safety**: Requires sandboxed execution environment
+
+### Performance Benefits
+- **GSM8K (Math)**: 72% accuracy (vs 33% with CoT)
+- **Date Understanding**: 81% accuracy (vs 53% with CoT)
+- **Reduces Errors**: Eliminates arithmetic mistakes
+
+### Safety Considerations
+- Use restricted namespace (no file I/O, network, etc.)
+- Timeout execution (prevent infinite loops)
+- Whitelist allowed imports
+- Run in sandboxed environment
+
+---
+
+## Multi-Stage Information Extraction Pipeline
+
+### Overview
+A pipeline for extracting structured information from unstructured text through multiple refinement stages.
+
+### Use Cases
+- Extracting entities from research papers
+- Parsing resumes for structured data
+- Converting documents to structured databases
+- Information extraction with validation
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Input     │
+│   Document  │
+│  (Unstruc-  │
+│   tured)    │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Stage 1: Entity Recognition       │
+│   Identify: Names, Orgs, Dates, etc │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Stage 2: Relationship Extraction  │
+│   Link entities: X works at Y,      │
+│   A published B, etc.               │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Stage 3: Validation & Formatting  │
+│   - Check consistency               │
+│   - Format as structured data       │
+│   - Flag uncertainties              │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Stage 4: Schema Mapping (Optional)│
+│   Map to target database schema     │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Output    │
+│ Structured  │
+│    JSON     │
+└─────────────┘
+```
+
+### Example: Research Paper Metadata Extraction
+
+**Input:**
+```
+Abstract: "Large Language Models (LLMs), such as ChatGPT and GPT-4, have revolutionized 
+natural language processing research and demonstrated potential in Artificial General 
+Intelligence (AGI). However, the expensive training and deployment of LLMs present 
+challenges to transparent and open academic research. To address these issues, this 
+project open-sources the Chinese LLaMA and Alpaca models..."
+```
+
+**Stage 1: Entity Recognition**
+
+**Prompt 1:**
+```
+Extract all model names, technologies, and key entities from this abstract.
+
+Abstract: {text}
+
+Return as a list of entities with types:
+```
+
+**Output 1:**
+```json
+{
+  "models": ["ChatGPT", "GPT-4", "LLaMA", "Alpaca"],
+  "technologies": ["Large Language Models", "LLMs", "AGI"],
+  "languages": ["Chinese"],
+  "tasks": ["natural language processing"]
+}
+```
+
+**Stage 2: Relationship Extraction**
+
+**Prompt 2:**
+```
+Given the extracted entities and the original abstract, identify relationships.
+
+Entities: {entities_from_stage1}
+Abstract: {text}
+
+Extract relationships in format: {entity1} - {relationship} - {entity2}
+```
+
+**Output 2:**
+```json
+{
+  "relationships": [
+    {"subject": "ChatGPT", "relation": "is_type_of", "object": "LLMs"},
+    {"subject": "GPT-4", "relation": "is_type_of", "object": "LLMs"},
+    {"subject": "LLMs", "relation": "used_for", "object": "natural language processing"},
+    {"subject": "LLaMA", "relation": "has_variant", "object": "Chinese LLaMA"},
+    {"subject": "Alpaca", "relation": "has_variant", "object": "Chinese Alpaca"}
+  ]
+}
+```
+
+**Stage 3: Validation & Structuring**
+
+**Prompt 3:**
+```
+Validate the extracted data and format according to this schema:
+
+Schema:
+{
+  "paper_models": [string],
+  "model_categories": [string],
+  "languages_supported": [string],
+  "research_areas": [string]
+}
+
+Extracted data: {combined_data}
+
+Output valid JSON matching schema:
+```
+
+**Output 3:**
+```json
+{
+  "paper_models": ["ChatGPT", "GPT-4", "Chinese LLaMA", "Chinese Alpaca"],
+  "model_categories": ["Large Language Models"],
+  "languages_supported": ["Chinese"],
+  "research_areas": ["Natural Language Processing", "Artificial General Intelligence"]
+}
+```
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+import json
+
+client = OpenAI()
+
+class MultiStageExtractor:
+    def __init__(self):
+        pass
+    
+    def stage1_entity_recognition(self, text: str) -> dict:
+        """Extract entities from text"""
+        prompt = f"""Extract all model names from this machine learning paper abstract.
+
+Abstract: {text}
+
+Return your response as a JSON array of model names: ["model1", "model2", ...]
+If unsure or no models found, return: ["NA"]
+
+Response:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=200
+        )
+        
+        try:
+            entities = json.loads(response.choices[0].message.content)
+            return {"models": entities}
+        except:
+            return {"models": ["NA"]}
+    
+    def stage2_validate_and_categorize(self, entities: dict, text: str) -> dict:
+        """Validate entities and categorize them"""
+        prompt = f"""Given these extracted model names and the original abstract, verify which are actually machine learning models.
+
+Extracted: {entities['models']}
+Abstract: {text}
+
+For each item, classify as:
+- "confirmed_model": Definitely a model
+- "technology": A technology/framework, not a specific model
+- "uncertain": Not sure
+
+Return JSON format:
+{{
+  "confirmed_models": [],
+  "technologies": [],
+  "uncertain": []
+}}
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=300
+        )
+        
+        try:
+            categorized = json.loads(response.choices[0].message.content)
+            return categorized
+        except:
+            return {"confirmed_models": entities['models'], "technologies": [], "uncertain": []}
+    
+    def stage3_format_output(self, categorized: dict) -> dict:
+        """Format final structured output"""
+        return {
+            "extracted_models": categorized.get("confirmed_models", []),
+            "related_technologies": categorized.get("technologies", []),
+            "confidence": "high" if not categorized.get("uncertain") else "medium",
+            "uncertain_items": categorized.get("uncertain", [])
+        }
+    
+    def extract(self, text: str) -> dict:
+        """Complete multi-stage extraction pipeline"""
+        # Stage 1: Entity recognition
+        entities = self.stage1_entity_recognition(text)
+        
+        # Stage 2: Validation and categorization
+        categorized = self.stage2_validate_and_categorize(entities, text)
+        
+        # Stage 3: Format output
+        final_output = self.stage3_format_output(categorized)
+        
+        return {
+            "stages": {
+                "stage1_entities": entities,
+                "stage2_categorized": categorized,
+                "stage3_final": final_output
+            },
+            "final_result": final_output
+        }
+
+# Usage
+extractor = MultiStageExtractor()
+
+abstract = """Large Language Models (LLMs), such as ChatGPT and GPT-4, have revolutionized 
+natural language processing research and demonstrated potential in Artificial General 
+Intelligence (AGI). However, the expensive training and deployment of LLMs present 
+challenges to transparent and open academic research. To address these issues, this 
+project open-sources the Chinese LLaMA and Alpaca models..."""
+
+result = extractor.extract(abstract)
+
+print("Final Result:")
+print(json.dumps(result["final_result"], indent=2))
+```
+
+### Key Characteristics
+- **Staged Processing**: Each stage refines the output
+- **Validation**: Multiple checks reduce errors
+- **Structured Output**: Produces machine-readable format
+- **Modularity**: Easy to modify individual stages
+- **Confidence Tracking**: Flags uncertain extractions
+
+### Performance Benefits
+- **Accuracy**: 30-40% improvement over single-stage
+- **Consistency**: Better adherence to schema
+- **Error Reduction**: Validation catches mistakes
+
+---
+
+## Pipeline Comparison & Selection Guide
+
+### When to Use Each Pipeline
+
+| Pipeline | Complexity | Speed | Accuracy | Best For |
+|----------|-----------|-------|----------|----------|
+| Basic Single-Prompt | Low | Fast | Good | Simple classification, straightforward QA |
+| Chain-of-Thought | Medium | Medium | High | Math, reasoning, complex decisions |
+| RAG | High | Slow | Very High | Knowledge-intensive QA, fact verification |
+| ReAct | High | Slow | High | Multi-step research, fact-checking |
+| Prompt Chaining | Medium | Medium | High | Document processing, multi-stage tasks |
+| Self-Consistency | Medium | Slow | Very High | Critical decisions, high-stakes reasoning |
+| Tree of Thoughts | Very High | Very Slow | Very High | Strategic planning, complex problems |
+| Reflexion | High | Slow | Improving | Learning tasks, code generation |
+| PAL | Medium | Medium | Very High | Math, calculations, date reasoning |
+| Multi-Stage Extraction | Medium | Medium | High | Information extraction, structuring |
+
+### Cost Considerations
+
+- **Cheapest**: Basic Single-Prompt (1 API call)
+- **Moderate**: CoT, Prompt Chaining, PAL (2-5 API calls)
+- **Expensive**: RAG, ReAct (5-15 API calls)
+- **Most Expensive**: Self-Consistency, ToT, Reflexion (10-50+ API calls)
+
+### Latency Considerations
+
+- **Fastest**: Basic (<1s), PAL (<2s)
+- **Medium**: CoT (2-5s), Chaining (3-8s)
+- **Slow**: RAG (5-15s with retrieval), ReAct (10-30s)
+- **Slowest**: Self-Consistency (parallel: 3-5s, sequential: 15-30s), ToT (30s-5min)
+
+### Combining Pipelines
+
+Many real-world applications combine multiple pipelines:
+
+- **RAG + CoT**: Retrieve documents, then reason step-by-step
+- **ReAct + PAL**: Use tools for search, PAL for calculations
+- **ToT + Self-Consistency**: Explore thought tree, vote on best path
+- **Chaining + Reflexion**: Multi-stage with learning from mistakes
+
+---
+
+## Conclusion
+
+This documentation covered 10 major agent pipelines used in modern LLM applications. Each pipeline serves specific use cases and offers different tradeoffs between complexity, cost, latency, and accuracy.
+
+**Key Takeaways:**
+
+1. **Start Simple**: Begin with basic prompts, add complexity as needed
+2. **Measure Performance**: Test on your specific use case
+3. **Consider Costs**: Balance accuracy vs. API call costs
+4. **Iterate**: Pipelines can be combined and customized
+5. **Safety First**: Always validate outputs, especially for code execution
+
+For the Prompt Engineering Guide application, these pipelines demonstrate how individual prompts (documented in PROMPTS_DOCUMENTATION.md) can be composed into sophisticated agent workflows that solve complex tasks.
+
