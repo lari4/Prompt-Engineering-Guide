@@ -928,3 +928,357 @@ for i, (t, a, o) in enumerate(result["history"], 1):
 
 ---
 
+## Prompt Chaining Pipeline
+
+### Overview
+Prompt chaining decomposes complex tasks into a sequence of subtasks, where each subtask is handled by a separate prompt, and the output of one becomes the input to the next.
+
+### Use Cases
+- Document question answering with extraction + synthesis
+- Multi-stage content generation
+- Complex data transformations
+- Validation and refinement workflows
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Input     │
+│   Document  │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Prompt 1: Extract Relevant Quotes│
+│   Task: Find quotes related to Q   │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Output 1: List of Quotes          │
+│   <quotes>                          │
+│   Quote 1: "..."                    │
+│   Quote 2: "..."                    │
+│   </quotes>                         │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Prompt 2: Synthesize Answer       │
+│   Input: Quotes + Original Doc     │
+│   Task: Compose helpful answer     │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Output 2: Final Answer            │
+│   "Based on the quotes..."          │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Prompt 3: Quality Check (Optional)│
+│   Verify accuracy and tone          │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Return    │
+│   Final     │
+│   Answer    │
+└─────────────┘
+```
+
+### Example: Document QA with Chaining
+
+**Input:**
+```
+Document: [Long research paper about climate change]
+Question: "What are the main causes of global warming?"
+```
+
+**Chain Step 1: Extract Quotes**
+
+**Prompt 1:**
+```
+You are a helpful assistant. Your task is to extract quotes from the document that are relevant to answering the question.
+
+Document: {document}
+Question: {question}
+
+Please output the list of quotes using <quotes></quotes> tags.
+```
+
+**Output 1:**
+```
+<quotes>
+"The primary cause of global warming is the increase in greenhouse gas emissions from fossil fuel combustion."
+"Deforestation contributes significantly by reducing CO2 absorption capacity."
+"Industrial processes and agriculture also emit substantial amounts of methane and nitrous oxide."
+</quotes>
+```
+
+**Chain Step 2: Synthesize Answer**
+
+**Prompt 2:**
+```
+Given the relevant quotes extracted from a document and the original question, please compose a comprehensive answer.
+
+Quotes: {quotes_from_step1}
+Question: {question}
+
+Ensure the answer is accurate, has a friendly tone, and sounds helpful.
+```
+
+**Output 2:**
+```
+The main causes of global warming include:
+1. Greenhouse gas emissions from burning fossil fuels (coal, oil, natural gas)
+2. Deforestation, which reduces the Earth's capacity to absorb CO2
+3. Industrial processes and agriculture, which emit methane and nitrous oxide
+
+These factors combine to trap heat in the atmosphere, leading to rising global temperatures.
+```
+
+**Data Flow:**
+1. **Input** → Document + Question
+2. **Stage 1** → Extract relevant quotes → Output: Quote list
+3. **Stage 2** → Synthesize from quotes → Output: Coherent answer
+4. **Stage 3** (Optional) → Verify quality → Output: Validated answer
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+client = OpenAI()
+
+def prompt_chain_pipeline(document: str, question: str):
+    # Chain Step 1: Extract quotes
+    prompt1 = f"""You are a helpful assistant. Extract quotes from the document relevant to the question.
+
+Document: {document}
+Question: {question}
+
+Output quotes using <quotes></quotes> tags."""
+
+    response1 = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt1}],
+        temperature=0.3,
+        max_tokens=500
+    )
+    
+    quotes = response1.choices[0].message.content
+    
+    # Chain Step 2: Synthesize answer
+    prompt2 = f"""Compose a comprehensive answer to the question using the extracted quotes.
+
+Quotes: {quotes}
+Question: {question}
+
+Be accurate, friendly, and helpful."""
+
+    response2 = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt2}],
+        temperature=0.7,
+        max_tokens=300
+    )
+    
+    answer = response2.choices[0].message.content
+    
+    return {
+        "question": question,
+        "extracted_quotes": quotes,
+        "final_answer": answer
+    }
+```
+
+### Key Characteristics
+- **Modularity**: Each step is isolated and testable
+- **Transparency**: Intermediate outputs are visible
+- **Debuggability**: Easy to identify which step fails
+- **Controllability**: Can modify individual prompts
+- **Reliability**: Better than single complex prompt
+
+### Benefits
+- **Improved Accuracy**: Focused prompts perform better
+- **Easier Debugging**: Clear failure points
+- **Flexibility**: Can add/remove steps
+- **Cost Optimization**: Can use different models for different steps
+
+---
+
+## Self-Consistency Voting Pipeline
+
+### Overview
+Self-consistency generates multiple reasoning paths for the same problem and selects the most consistent answer through majority voting.
+
+### Use Cases
+- Arithmetic and mathematical reasoning
+- Complex problem solving with multiple solution paths
+- Improving reliability of Chain-of-Thought
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   Problem   │
+└──────┬──────┘
+       │
+       ├────────┬────────┬────────┬────────┐
+       │        │        │        │        │
+       v        v        v        v        v
+    ┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
+    │Path 1││Path 2││Path 3││Path 4││Path 5│
+    │      ││      ││      ││      ││      │
+    │CoT   ││CoT   ││CoT   ││CoT   ││CoT   │
+    │      ││      ││      ││      ││      │
+    └───┬──┘└───┬──┘└───┬──┘└───┬──┘└───┬──┘
+        │       │       │       │       │
+        v       v       v       v       v
+    ┌───────────────────────────────────────┐
+    │   Answer 1  Answer 2  Answer 3       │
+    │   "42"      "42"      "41"            │
+    │   Answer 4  Answer 5                 │
+    │   "42"      "40"                     │
+    └───────┬───────────────────────────────┘
+            │
+            v
+    ┌───────────────────┐
+    │   Majority Vote   │
+    │   42: 3 votes     │
+    │   41: 1 vote      │
+    │   40: 1 vote      │
+    └────────┬──────────┘
+             │
+             v
+    ┌────────────────┐
+    │  Final Answer  │
+    │     "42"       │
+    └────────────────┘
+```
+
+### Example: Math Problem
+
+**Input:**
+```
+Problem: "When I was 6 my sister was half my age. Now I'm 70, how old is my sister?"
+```
+
+**Path 1 (Temperature 0.7):**
+```
+When I was 6, my sister was half my age, so she was 3.
+The age difference is 6 - 3 = 3 years.
+Now I'm 70, so my sister is 70 - 3 = 67 years old.
+Answer: 67
+```
+
+**Path 2 (Temperature 0.8):**
+```
+At age 6, half is 3, so sister was 3 years old.
+Age gap: 6 - 3 = 3 years (constant).
+Current age: 70 - 3 = 67.
+Answer: 67
+```
+
+**Path 3 (Temperature 0.9):**
+```
+Sister was 3 when I was 6.
+I'm 3 years older.
+70 - 3 = 67.
+Answer: 67
+```
+
+**Path 4 (Temperature 0.7):**
+```
+Half of 6 is 3, sister's age then.
+Now: 70 - (6-3) = 67.
+Answer: 67
+```
+
+**Path 5 (Temperature 0.8):**
+```
+Sister age at my 6: 3
+Years passed: 70 - 6 = 64
+Sister now: 3 + 64 = 67
+Answer: 67
+```
+
+**Voting:**
+- Answer "67": 5 votes ✓
+- **Final Answer: 67** (unanimous)
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+from collections import Counter
+import re
+
+client = OpenAI()
+
+def self_consistency_pipeline(problem: str, num_paths: int = 5):
+    """Generate multiple reasoning paths and vote"""
+    
+    answers = []
+    reasoning_paths = []
+    
+    # Generate multiple paths with different temperatures
+    for i in range(num_paths):
+        prompt = f"{problem}\n\nLet's think step by step."
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7 + (i * 0.05),  # Vary temperature for diversity
+            max_tokens=300
+        )
+        
+        reasoning = response.choices[0].message.content
+        reasoning_paths.append(reasoning)
+        
+        # Extract answer (last number or last line)
+        # This is simplified - in practice, use more robust parsing
+        answer_match = re.findall(r'\d+', reasoning)
+        if answer_match:
+            answers.append(answer_match[-1])
+    
+    # Majority voting
+    vote_counts = Counter(answers)
+    most_common_answer, vote_count = vote_counts.most_common(1)[0]
+    
+    return {
+        "problem": problem,
+        "reasoning_paths": reasoning_paths,
+        "answers": answers,
+        "vote_counts": dict(vote_counts),
+        "final_answer": most_common_answer,
+        "confidence": vote_count / num_paths
+    }
+
+# Usage
+result = self_consistency_pipeline(
+    "When I was 6 my sister was half my age. Now I'm 70, how old is my sister?",
+    num_paths=5
+)
+
+print("Final Answer:", result["final_answer"])
+print("Confidence:", f"{result['confidence']*100}%")
+print("Vote Distribution:", result["vote_counts"])
+```
+
+### Key Characteristics
+- **Robustness**: More reliable than single path
+- **Diversity**: Explores different reasoning approaches
+- **Consensus**: Voting reduces impact of errors
+- **Cost**: Requires multiple API calls (higher cost)
+- **Latency**: Can parallelize for speed
+
+### Performance Improvements
+- **Arithmetic**: ~17% → ~74% accuracy on GSM8K
+- **Commonsense**: Significant gains on StrategyQA
+- **Best with**: Temperature sampling (0.5-1.0) for diversity
+
+---
+
