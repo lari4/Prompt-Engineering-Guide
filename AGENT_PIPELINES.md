@@ -319,3 +319,293 @@ result_zs = chain_of_thought_pipeline(
 
 ---
 
+## Retrieval Augmented Generation (RAG) Pipeline
+
+### Overview
+RAG pipeline combines information retrieval with text generation to ground LLM responses in external knowledge sources, reducing hallucination and enabling access to up-to-date information.
+
+### Use Cases
+- Knowledge-intensive question answering
+- Document-based QA systems
+- Fact verification
+- Research assistance
+- Technical documentation queries
+
+### Pipeline Flow
+
+```
+┌─────────────┐
+│   User      │
+│   Query     │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Query Processing                  │
+│   - Extract keywords                │
+│   - Generate embeddings             │
+│   - Expand query (optional)         │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Document Retrieval                │
+│   - Vector similarity search        │
+│   - Top-K document selection        │
+│   - Re-ranking (optional)           │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Retrieved Documents               │
+│   Doc 1: [Relevant content]         │
+│   Doc 2: [Relevant content]         │
+│   Doc 3: [Relevant content]         │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Context Construction              │
+│   - Combine query + documents       │
+│   - Format as context               │
+│   - Add instructions                │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   LLM Generation                    │
+│   - Process query + context         │
+│   - Generate grounded response      │
+│   - Cite sources (optional)         │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Return    │
+│   Answer +  │
+│   Citations │
+└─────────────┘
+```
+
+### Example: Science Question Answering
+
+**Input Data:**
+```
+Question: "What was OKT3 originally sourced from?"
+```
+
+**Step 1: Query Embedding**
+```
+Query → Embedding Vector [0.234, -0.891, 0.456, ...]
+```
+
+**Step 2: Document Retrieval**
+```
+Retrieved Document (Top match):
+"Teplizumab traces its roots to a New Jersey drug company called Ortho 
+Pharmaceutical. There, scientists generated an early version of the antibody, 
+dubbed OKT3. Originally sourced from mice, the molecule was able to bind to 
+the surface of T cells and limit their cell-killing potential. In 1986, it 
+was approved to help prevent organ rejection after kidney transplants, making 
+it the first therapeutic antibody allowed for human use."
+
+Similarity Score: 0.92
+```
+
+**Step 3: Context Construction**
+```
+Answer the question based on the context below. Keep the answer short and concise. 
+Respond "Unsure about answer" if not sure about the answer.
+
+Context: Teplizumab traces its roots to a New Jersey drug company called Ortho 
+Pharmaceutical. There, scientists generated an early version of the antibody, 
+dubbed OKT3. Originally sourced from mice, the molecule was able to bind to the 
+surface of T cells and limit their cell-killing potential. In 1986, it was 
+approved to help prevent organ rejection after kidney transplants, making it the 
+first therapeutic antibody allowed for human use.
+
+Question: What was OKT3 originally sourced from?
+Answer:
+```
+
+**Step 4: LLM Response**
+```
+Mice
+```
+
+**Data Flow:**
+1. **Input** → User question: "What was OKT3 originally sourced from?"
+2. **Embedding** → Convert to vector: [0.234, -0.891, ...]
+3. **Retrieval** → Find top-k similar documents from knowledge base
+4. **Retrieved Context** → "...Originally sourced from mice..."
+5. **Prompt Construction** → Question + Context + Instructions
+6. **LLM Processing** → Generate answer grounded in context
+7. **Output** → "Mice" (with optional citation)
+
+### Advanced RAG Variant: Multi-Step Retrieval
+
+```
+┌─────────────┐
+│   Query     │
+└──────┬──────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Initial Retrieval                 │
+│   Top-K documents                   │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   LLM: Identify Missing Info        │
+│   "Need more context about X"       │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Second Retrieval                  │
+│   Query for missing information     │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Combine All Retrieved Docs        │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────────────────────────────┐
+│   Generate Final Answer             │
+└──────┬──────────────────────────────┘
+       │
+       v
+┌─────────────┐
+│   Answer    │
+└─────────────┘
+```
+
+### Implementation Code
+
+```python
+from openai import OpenAI
+import numpy as np
+from typing import List, Dict
+
+client = OpenAI()
+
+class RAGPipeline:
+    def __init__(self, knowledge_base: List[Dict]):
+        """
+        knowledge_base: List of documents with 'text' and 'embedding' fields
+        """
+        self.knowledge_base = knowledge_base
+    
+    def embed_query(self, query: str) -> np.ndarray:
+        """Step 1: Convert query to embedding"""
+        response = client.embeddings.create(
+            model="text-embedding-ada-002",
+            input=query
+        )
+        return np.array(response.data[0].embedding)
+    
+    def retrieve_documents(self, query_embedding: np.ndarray, top_k: int = 3) -> List[Dict]:
+        """Step 2: Retrieve top-k similar documents"""
+        similarities = []
+        
+        for doc in self.knowledge_base:
+            doc_embedding = np.array(doc['embedding'])
+            # Cosine similarity
+            similarity = np.dot(query_embedding, doc_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+            )
+            similarities.append((similarity, doc))
+        
+        # Sort by similarity and get top-k
+        similarities.sort(reverse=True, key=lambda x: x[0])
+        return [doc for _, doc in similarities[:top_k]]
+    
+    def construct_context(self, query: str, documents: List[Dict]) -> str:
+        """Step 3: Build context from retrieved documents"""
+        context_parts = []
+        for i, doc in enumerate(documents, 1):
+            context_parts.append(f"Document {i}: {doc['text']}")
+        
+        context = "\n\n".join(context_parts)
+        
+        prompt = f"""Answer the question based on the context below. Keep the answer short and concise. 
+Respond "Unsure about answer" if not sure about the answer.
+
+Context: {context}
+
+Question: {query}
+Answer:"""
+        
+        return prompt
+    
+    def generate_answer(self, prompt: str) -> str:
+        """Step 4: Generate answer using LLM"""
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,  # Lower temperature for factual answers
+            max_tokens=250
+        )
+        return response.choices[0].message.content
+    
+    def query(self, question: str, top_k: int = 3) -> Dict:
+        """Complete RAG pipeline"""
+        # Step 1: Embed query
+        query_embedding = self.embed_query(question)
+        
+        # Step 2: Retrieve relevant documents
+        retrieved_docs = self.retrieve_documents(query_embedding, top_k)
+        
+        # Step 3: Construct context
+        prompt = self.construct_context(question, retrieved_docs)
+        
+        # Step 4: Generate answer
+        answer = self.generate_answer(prompt)
+        
+        return {
+            "question": question,
+            "answer": answer,
+            "sources": retrieved_docs,
+            "prompt": prompt
+        }
+
+# Usage
+knowledge_base = [
+    {
+        "text": "Teplizumab traces its roots to a New Jersey drug company called Ortho Pharmaceutical. There, scientists generated an early version of the antibody, dubbed OKT3. Originally sourced from mice, the molecule was able to bind to the surface of T cells and limit their cell-killing potential.",
+        "embedding": [...]  # Pre-computed embedding
+    },
+    # More documents...
+]
+
+rag = RAGPipeline(knowledge_base)
+result = rag.query("What was OKT3 originally sourced from?")
+
+print("Answer:", result["answer"])
+print("Sources:", len(result["sources"]), "documents")
+```
+
+### Key Characteristics
+- **Grounding**: Answers based on retrieved facts, not just model knowledge
+- **Reduced Hallucination**: Citations and evidence reduce fabrication
+- **Up-to-date**: Can access latest information from knowledge base
+- **Transparency**: Can show source documents
+- **Complexity**: Requires vector database and embedding models
+- **Latency**: Additional retrieval step adds processing time
+
+### Performance Benefits
+- **Accuracy**: 20-30% improvement on knowledge-intensive QA
+- **Factuality**: Significant reduction in hallucinated facts
+- **Coverage**: Can answer questions beyond training data cutoff
+
+### Components Required
+1. **Vector Database**: Store document embeddings (Pinecone, Weaviate, FAISS)
+2. **Embedding Model**: Convert text to vectors (text-embedding-ada-002, sentence-transformers)
+3. **Retrieval System**: Similarity search and ranking
+4. **LLM**: Generate answer from context (GPT-4, Claude, etc.)
+
+---
+
